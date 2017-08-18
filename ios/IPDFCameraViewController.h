@@ -43,7 +43,8 @@ typedef NS_ENUM(NSInteger, IPDFRectangeType)
 
 - (void)focusAtPoint:(CGPoint)point completionHandler:(void(^)())completionHandler;
 
-- (void)captureImageWithCompletionHander:(void(^)(id data))completionHandler;
+- (void)captureImageWithCompletionHander:(void(^)(NSString *imageFilePath))completionHandler;
+
 
 @property (nonatomic, strong) UIColor* overlayColor;
 @property (nonatomic, assign) float saturation;

@@ -14,6 +14,8 @@
 #import <CoreImage/CoreImage.h>
 #import <ImageIO/ImageIO.h>
 #import <GLKit/GLKit.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+
 
 @interface IPDFCameraViewController () <AVCaptureVideoDataOutputSampleBufferDelegate>
 
@@ -285,7 +287,6 @@
 - (void)setDetectionRefreshRateInMS:(NSInteger)detectionRefreshRateInMS
 {
     _detectionRefreshRateInMS = detectionRefreshRateInMS;
-    NSLog(@"lol : %ld", (long)_detectionRefreshRateInMS);
 }
 
 
@@ -323,19 +324,9 @@
     }
 }
 
-- (void)captureImageWithCompletionHander:(void(^)(id data))completionHandler
+- (void)captureImageWithCompletionHander:(void(^)(NSString *imageFilePath))completionHandler
 {
     if (_isCapturing) return;
-
-    __weak typeof(self) weakSelf = self;
-
-    [weakSelf hideGLKView:YES completion:^
-    {
-        [weakSelf hideGLKView:NO completion:^
-        {
-            [weakSelf hideGLKView:YES completion:nil];
-        }];
-    }];
 
     _isCapturing = YES;
 
@@ -352,15 +343,25 @@
         }
         if (videoConnection) break;
     }
-
+    
+    __weak typeof(self) weakSelf = self;
+    
     [self.stillImageOutput captureStillImageAsynchronouslyFromConnection:videoConnection completionHandler: ^(CMSampleBufferRef imageSampleBuffer, NSError *error)
      {
-         NSData *imageData = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:imageSampleBuffer];
-
-         if (weakSelf.cameraViewType == IPDFCameraViewTypeBlackAndWhite || weakSelf.isBorderDetectionEnabled)
+         if (error)
          {
-             CIImage *enhancedImage = [CIImage imageWithData:imageData];
-
+             _isCapturing = NO;
+             return;
+         }
+         
+         __block NSString *filePath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"ipdf_img_%i.jpeg",(int)[NSDate date].timeIntervalSince1970]];
+         
+         @autoreleasepool
+         {
+             NSData *imageData = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:imageSampleBuffer];
+             CIImage *enhancedImage = [[CIImage alloc] initWithData:imageData options:@{kCIImageColorSpace:[NSNull null]}];
+             imageData = nil;
+             
              if (weakSelf.cameraViewType == IPDFCameraViewTypeBlackAndWhite)
              {
                  enhancedImage = [self filteredImageUsingEnhanceFilterOnImage:enhancedImage];
@@ -369,33 +370,80 @@
              {
                  enhancedImage = [self filteredImageUsingContrastFilterOnImage:enhancedImage];
              }
-
+             
              if (weakSelf.isBorderDetectionEnabled && rectangleDetectionConfidenceHighEnough(_imageDedectionConfidence))
              {
                  CIRectangleFeature *rectangleFeature = [self biggestRectangleInRectangles:[[self highAccuracyRectangleDetector] featuresInImage:enhancedImage]];
-
+                 
                  if (rectangleFeature)
                  {
                      enhancedImage = [self correctPerspectiveForImage:enhancedImage withFeatures:rectangleFeature];
                  }
              }
-
-             UIGraphicsBeginImageContext(CGSizeMake(enhancedImage.extent.size.height, enhancedImage.extent.size.width));
-             [[UIImage imageWithCIImage:enhancedImage scale:1.0 orientation:UIImageOrientationRight] drawInRect:CGRectMake(0,0, enhancedImage.extent.size.height, enhancedImage.extent.size.width)];
-             UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-             UIGraphicsEndImageContext();
-
-             [weakSelf hideGLKView:NO completion:nil];
-             completionHandler(image);
+             
+             CIFilter *transform = [CIFilter filterWithName:@"CIAffineTransform"];
+             [transform setValue:enhancedImage forKey:kCIInputImageKey];
+             NSValue *rotation = [NSValue valueWithCGAffineTransform:CGAffineTransformMakeRotation(-90 * (M_PI/180))];
+             [transform setValue:rotation forKey:@"inputTransform"];
+             enhancedImage = [transform outputImage];
+             
+             if (!enhancedImage || CGRectIsEmpty(enhancedImage.extent)) return;
+             
+             static CIContext *ctx = nil;
+             if (!ctx)
+             {
+                 ctx = [CIContext contextWithOptions:@{kCIContextWorkingColorSpace:[NSNull null]}];
+             }
+             
+             CGSize bounds = enhancedImage.extent.size;
+             bounds = CGSizeMake(floorf(bounds.width / 4) * 4,floorf(bounds.height / 4) * 4);
+             CGRect extent = CGRectMake(enhancedImage.extent.origin.x, enhancedImage.extent.origin.y, bounds.width, bounds.height);
+             
+             static int bytesPerPixel = 8;
+             uint rowBytes = bytesPerPixel * bounds.width;
+             uint totalBytes = rowBytes * bounds.height;
+             uint8_t *byteBuffer = malloc(totalBytes);
+             
+             CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+             
+             [ctx render:enhancedImage toBitmap:byteBuffer rowBytes:rowBytes bounds:extent format:kCIFormatRGBA8 colorSpace:colorSpace];
+             
+             CGContextRef bitmapContext = CGBitmapContextCreate(byteBuffer,bounds.width,bounds.height,bytesPerPixel,rowBytes,colorSpace,kCGImageAlphaNoneSkipLast);
+             CGImageRef imgRef = CGBitmapContextCreateImage(bitmapContext);
+             CGColorSpaceRelease(colorSpace);
+             CGContextRelease(bitmapContext);
+             free(byteBuffer);
+             
+             if (imgRef == NULL)
+             {
+                 CFRelease(imgRef);
+                 return;
+             }
+             saveCGImageAsJPEGToFilePath(imgRef, filePath);
+             CFRelease(imgRef);
+             
+             dispatch_async(dispatch_get_main_queue(), ^
+                            {
+                                completionHandler(filePath);
+                            });
+             
+             _imageDedectionConfidence = 0.0f;
+             _isCapturing = NO;
+             NSLog(@"lol : %d", (bool)_isCapturing);
          }
-         else
-         {
-             [weakSelf hideGLKView:NO completion:nil];
-             completionHandler(imageData);
-         }
-
-         _isCapturing = NO;
      }];
+}
+
+void saveCGImageAsJPEGToFilePath(CGImageRef imageRef, NSString *filePath)
+{
+    @autoreleasepool
+    {
+        CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:filePath];
+        CGImageDestinationRef destination = CGImageDestinationCreateWithURL(url, kUTTypeJPEG, 1, NULL);
+        CGImageDestinationAddImage(destination, imageRef, nil);
+        CGImageDestinationFinalize(destination);
+        CFRelease(destination);
+    }
 }
 
 - (void)hideGLKView:(BOOL)hidden completion:(void(^)())completion

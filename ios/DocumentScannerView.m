@@ -24,6 +24,7 @@
         [self setContrast: self.contrast];
         [self setBrightness: self.brightness];
         [self setSaturation: self.saturation];
+//        [self setIncludeBase64: self.includeBase64]
 
         NSLog(@"detectionCountBeforeCapture:  %ld", (long)self.detectionCountBeforeCapture);
         NSLog(@"detectionRefreshRateInMS:  %ld", (long)self.detectionRefreshRateInMS);
@@ -50,10 +51,11 @@
     }
 
     if (self.stableCounter > self.detectionCountBeforeCapture){
-        [self captureImageWithCompletionHander:^(id data) {
+        [self captureImageWithCompletionHander:^(NSString *imageFilePath) {
+           NSLog(@"data:  %ld", (long)self.detectionCountBeforeCapture);
            if (self.onPictureTaken) {
-               NSData *imageData = UIImageJPEGRepresentation(data, self.quality);
-               self.onPictureTaken(@{@"image": [imageData base64EncodedStringWithOptions:NSDataBase64Encoding64CharacterLineLength]});
+               //NSData *imageData = UIImageJPEGRepresentation(data, self.quality);
+               self.onPictureTaken(@{@"image": (imageFilePath)});
                [self stop];
            }
         }];
